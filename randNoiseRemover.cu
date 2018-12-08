@@ -820,8 +820,14 @@ int main(int argc, char **argv)
 
 
 	// progress tracking 
-	for(int y = 0; y < 1; y++) {
-	//do{
+	do{
+
+		// reset SAD (sum of absolute pixel differences)
+		cudaStatus = cudaMemset (GPU_SAD, 0, sizeof(ui) );
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemset for GPU_SAD failed!");
+			exit(EXIT_FAILURE);
+		}
 		
 		Convolute <<< NumBlocksNP, ThrPerBlk >>> (GPU_CURR_BW, GPU_PREV_BW,  NoisyPixelCoords,  KernelIndices, NumNoisyPixelsCPU, IPH);
 
@@ -856,7 +862,7 @@ int main(int argc, char **argv)
 
 		printf("The SAD is %d\n", CPU_SAD);
 
-	} //while(CPU_SAD > T);
+	} while(CPU_SAD > T);
 
 
 
