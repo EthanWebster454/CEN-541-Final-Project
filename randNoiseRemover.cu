@@ -140,37 +140,80 @@ void findNoisyPixels(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, ui*glob
 }
 
 
-__device__
-uch Horz[5][5] = {	{ 0, 0,  0,  0,  0 },
-					{ 1, 1,  1,  1,  1 },
-					{ 1, 1,  0,  1,  1 },
-					{ 1, 1,  1,  1,  1 },
-					{ 0, 0,  0,  0,  0 } };
+// __device__
+// uch Horz[5][5] = {	{ 0, 0,  0,  0,  0 },
+// 					{ 1, 1,  1,  1,  1 },
+// 					{ 1, 1,  0,  1,  1 },
+// 					{ 1, 1,  1,  1,  1 },
+// 					{ 0, 0,  0,  0,  0 } };
 
-__device__
-uch Vert[5][5] = {	{ 0, 1,  1,  1,  0 },
-					{ 0, 1,  1,  1,  0 },
-					{ 0, 1,  0,  1,  0 },
-					{ 0, 1,  1,  1,  0 },
-					{ 0, 1,  1,  1,  0 } };
+// __device__
+// uch Vert[5][5] = {	{ 0, 1,  1,  1,  0 },
+// 					{ 0, 1,  1,  1,  0 },
+// 					{ 0, 1,  0,  1,  0 },
+// 					{ 0, 1,  1,  1,  0 },
+// 					{ 0, 1,  1,  1,  0 } };
 
-__device__
-uch mask45[7][7]={	{0, 0, 0, 0, 1, 0, 0},
-					{0, 0, 0, 1, 1, 1, 0},
-					{0, 0, 1, 1, 1, 1, 1},
-					{0, 1, 1, 0, 1, 1, 0},
-					{1, 1, 1, 1, 1, 0, 0},
-					{0, 1, 1, 1, 0, 0, 0},
-					{0, 0, 1, 0, 0, 0, 0}};
+// __device__
+// uch mask45[7][7]={	{0, 0, 0, 0, 1, 0, 0},
+// 					{0, 0, 0, 1, 1, 1, 0},
+// 					{0, 0, 1, 1, 1, 1, 1},
+// 					{0, 1, 1, 0, 1, 1, 0},
+// 					{1, 1, 1, 1, 1, 0, 0},
+// 					{0, 1, 1, 1, 0, 0, 0},
+// 					{0, 0, 1, 0, 0, 0, 0}};
 
-__device__
-uch mask135[7][7]={	{0, 0, 1, 0, 0, 0, 0},
-                  	{0, 1, 1, 1, 0, 0, 0},
-                  	{1, 1, 1, 1, 1, 0, 0},
-                  	{0, 1, 1, 0, 1, 1, 0},
-                  	{0, 0, 1, 1, 1, 1, 1},
-                  	{0, 0, 0, 1, 1, 1, 0},
-                  	{0, 0, 0, 0, 1, 0, 0}};
+// __device__
+// uch mask135[7][7]={	{0, 0, 1, 0, 0, 0, 0},
+//                   	{0, 1, 1, 1, 0, 0, 0},
+//                   	{1, 1, 1, 1, 1, 0, 0},
+//                   	{0, 1, 1, 0, 1, 1, 0},
+//                   	{0, 0, 1, 1, 1, 1, 1},
+//                   	{0, 0, 0, 1, 1, 1, 0},
+//                   	{0, 0, 0, 0, 1, 0, 0}};
+
+
+//3x3 standard mask
+__constant__
+double mask0[3][3] = {  {0.1036,	0.1464,	0.1036},
+						{0.1464,	0,		0.1464},
+						{0.1036,	0.1464,	0.1036}};
+
+// horizontal 5x5 mask
+__constant__
+double mask1[5][5] = {  {0,			0,		0,			0,		0},
+						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465},
+						{0.0520,	0.1040,	0,			0.1040,	0.0520},
+						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465},
+						{0,			0,		0,			0,		0}};
+
+//vertical 5x5 mask						
+__constant__
+double mask2[5][5] = {  {0,	0.0465,	0.0520,	0.0465,	0},
+						{0,	0.0735,	0.1040,	0.0735,	0},
+						{0,	0.1040,	0,		0.1040,	0},
+						{0,	0.0735,	0.1040,	0.0735,	0},
+						{0,	0.0465,	0.0520,	0.0465,	0}};
+
+//45 degree 7x7 mask					
+__constant__
+double mask3[7][7] = {	{0,			0,		0,		0,		0.0251,	0,		0},
+						{0,			0,		0,		0.0397,	0.0355,	0.0281,	0},
+						{0,			0,		0.0562,	0.0794,	0.0562,	0.0355,	0.0251},
+						{0,			0.0397,	0.0794,	0,		0.0794,	0.0397,	0},
+						{0.0251,	0.0355,	0.0562,	0.0794,	0.0562,	0,		0},
+						{0,			0.0281,	0.0355,	0.0397,	0,		0,		0},
+						{0,			0,		0.0251,	0,		0,		0,		0}};
+						
+//135 degree 7x7 mask							
+__constant__						
+double mask4[7][7] = {  {0,			0,			0.0251,	0,		0,		0,		0},
+						{0,			0.0281,		0.0355,	0.0397,	0,		0,		0},
+						{0.0251,	0.0355,		0.0562,	0.0794,	0.0562,	0,		0},
+						{0,			0.0397,		0.0794,	0,		0.0794,	0.0397,	0},
+						{0,			0,			0.0562,	0.0794,	0.0562,	0.0355,	0.0251},
+						{0,			0,			0,		0.0397,	0.0355,	0.0281,	0},
+						{0,			0,			0,		0,		0.0251,	0,		0}};
 
 
 // Kernel that adds salt&pepper noise of given probability density to an image
@@ -219,7 +262,7 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 			if(noiseMap[indx]){
 
 				// if the current 5x5 horizontal mask cell is set to TRUE
-				if(Horz[i+2][j+2]) {
+				if(mask1[i+2][j+2]) {
 
 					// obtain noise free pixel and add to list
 					maskA[maskAIndx] = ImgSrc[indx];
@@ -227,7 +270,7 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 				}
 
 				// if the current 5x5 vertical mask cell is set to TRUE
-				if(Vert[i+2][j+2]) {
+				if(mask2[i+2][j+2]) {
 
 					// obtain noise free pixel and add to list
 					maskB[maskBIndx] = ImgSrc[indx];
@@ -251,14 +294,14 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 			if(noiseMap[indx]){
 
 				// if the current 7x7 45 degree mask cell is set to TRUE
-				if(mask45[i+3][j+3]) {
+				if(mask3[i+3][j+3]) {
 					// obtain noise free pixel and add to list
 					maskC[maskCIndx] = ImgSrc[indx];
 					maskCIndx++;
 				}
 
 				// if the current 7x7 135 degree mask cell is set to TRUE
-				if(mask135[i+3][j+3]) {
+				if(mask4[i+3][j+3]) {
 					// obtain noise free pixel and add to list
 					maskD[maskDIndx] = ImgSrc[indx];
 					maskDIndx++;
@@ -316,47 +359,8 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 
 }
 
-//3x3 mask
-__constant__
-double mask0[3][3] = {  {0.1036,0.1464,0.1036},
-						{0.1464,0,0.1464},
-						{0.1036,0.1464,0.1036}};	
-						
-//horizontal 5x5 mask
-__constant__
-double mask1[5][5] = {  {0,0,0,0,0},
-						{0.0465,0.0735,0.1040,0.0735,0.0465},
-						{0.0520,0.1040,0,0.1040,0.0520},
-						{0.0465,0.0735,0.1040,0.0735,0.0465},
-						{0,0,0,0,0}};
 
-//vertical 5x5 mask						
-__constant__
-double mask2[5][5] = {  {0,0.0465,0.0520,0.0465,0},
-						{0,0.0735,0.1040,0.0735,0},
-						{0,0.1040,0,0.1040,0},
-						{0,0.0735,0.1040,0.0735,0},
-						{0,0.0465,0.0520,0.0465,0}};
 
-//45 degree 7x7 mask					
-__constant__
-double mask3[7][7] = {	{0,0,0,0,0.0251,0,0},
-						{0,0,0,0.0397,0.0355,0.0281,0},
-						{0,0,0.0562,0.0794,0.0562,0.0355,0.0251},
-						{0,0.0397,0.0794,0,0.0794,0.0397,0},
-						{0.0251,0.0355,0.0562,0.0794,0.0562,0,0},
-						{0,0.0281,0.0355,0.0397,0,0,0},
-						{0,0,0.0251,0,0,0,0}};
-						
-//135 degree 7x7 mask							
-__constant__						
-double mask4[7][7] = {  {0,0,0.0251,0,0,0,0},
-						{0,0.0281,0.0355,0.0397,0,0,0},
-						{0.0251,0.0355,0.0562,0.0794,0.0562,0,0},
-						{0,0.0397,0.0794,0,0.0794,0.0397,0},
-						{0,0,0.0562,0.0794,0.0562,0.0355,0.0251},
-						{0,0,0,0.0397,0.0355,0.0281,0},
-						{0,0,0,0,0.0251,0,0}};
 
 // convolutions based on kernel indices
 __global__
