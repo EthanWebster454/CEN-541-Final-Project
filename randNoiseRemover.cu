@@ -137,6 +137,17 @@ void findNoisyPixels(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, ui*glob
 		noiseMap[MYpixIndex] = 0;
 
 	}
+
+	// if(pIJ == 255 || pIJ == 0){
+
+	// 	ui listIndex = atomicAdd(ListLength, (ui)1); 
+
+	// 	locations[listIndex].i = MYrow;
+	// 	locations[listIndex].j = MYcol;
+
+	// 	noiseMap[MYpixIndex] = 0;
+
+	// }
 	
 }
 
@@ -463,7 +474,7 @@ void SAD(ui *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, u
 
 	// absolute difference
 	if(absDiff<0)
-		absDiff = -absDiff;
+		absDiff = absDiff*(-1);
 	
 	atomicAdd(sad, (ui)absDiff); // update global sum
 
@@ -499,6 +510,33 @@ void BWKernel(uch *ImgBW, uch *ImgGPU, double *ImgfpBW, ui Hpixels)
 }
 
 
+// Kernel that calculates a RGB (grayscale) version of B&W image for filing as Windows BMP
+__global__
+void RGBKernel(uch *ImgRGB, double *ImgBW, ui Hpixels)
+{
+	ui ThrPerBlk = blockDim.x;
+	ui MYbid = blockIdx.x;
+	ui MYtid = threadIdx.x;
+	ui MYgtid = ThrPerBlk * MYbid + MYtid;
+
+	//ui NumBlocks = gridDim.x;
+	ui BlkPerRow = CEIL(Hpixels, ThrPerBlk);
+	ui RowBytes = (Hpixels * 3 + 3) & (~3);
+	ui MYrow = MYbid / BlkPerRow;
+	ui MYcol = MYgtid - MYrow*BlkPerRow*ThrPerBlk;
+	if (MYcol >= Hpixels) return;			// col out of range
+
+	ui MYdstIndex = MYrow * RowBytes + 3 * MYcol;
+	ui MYpixIndex = MYrow * Hpixels + MYcol;
+
+	uch pixInt = ImgBW[MYpixIndex];
+
+	ImgRGB[MYdstIndex] = pixInt;
+	ImgRGB[MYdstIndex+1] = pixInt;
+	ImgRGB[MYdstIndex+2] = pixInt;
+}
+
+
 // Kernel that copies an image from one part of the
 // GPU memory (ImgSrc) to another (ImgDst)
 __global__
@@ -516,6 +554,21 @@ void NoisyPixCopy(double *NPDst, double *ImgSrc, pixelCoords *pc, ui NoisyPixelL
 	ui srcIndex = currCoord.i * Hpixels + currCoord.j;
 
 	NPDst[srcIndex] = ImgSrc[srcIndex];
+}
+
+
+// Kernel that copies an image from one part of the
+// GPU memory (ImgSrc) to another (ImgDst)
+__global__
+void PixCopy(double *ImgDst, double *ImgSrc, ui FS)
+{
+	ui ThrPerBlk = blockDim.x;
+	ui MYbid = blockIdx.x;
+	ui MYtid = threadIdx.x;
+	ui MYgtid = ThrPerBlk * MYbid + MYtid;
+
+	if (MYgtid > FS) return;				// outside the allocated memory
+	ImgDst[MYgtid] = ImgSrc[MYgtid];
 }
 
 
@@ -581,11 +634,11 @@ int main(int argc, char **argv)
 	cudaError_t cudaStatus;
 	cudaEvent_t time1, time2, time3, time4;
 	char InputFileName[255], OutputFileName[255], ProgName[255];
-	ui BlkPerRow, ThrPerBlk=256, NumBlocks, GPUDataTransfer;
+	ui BlkPerRow, ThrPerBlk=256, NumBlocks, GPUDataTransfer, NumBlocksNP;
 	cudaDeviceProp GPUprop;
 	ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;		char SupportedBlocks[100]; 
 
-	ui GPUtotalBufferSize, R = 5, T = 5, NumNoisyPixelsCPU, mutexInit[3] = {0, 255, 0};
+	ui GPUtotalBufferSize, R = 5, T = 5, NumNoisyPixelsCPU, mutexInit[4] = {0, 255, 0, 0};
 	ui CPU_SAD;
 
 	strcpy(ProgName, "randNoiseRemoval");
@@ -664,12 +717,12 @@ int main(int argc, char **argv)
 	NumNoisyPixelsGPU : sizeof(ui)
 	GPU_PREV_BW : sizeof(double) * IMAGEPIX
 	GPU_CURR_BW : sizeof(double) * IMAGEPIX  
-	GPU_SAD : 1 byte
+	GPU_SAD : sizeof(ui)
 	 ***********************
 
 */
 	// allocate sufficient memory on the GPU to hold all above items
-	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3+2*(sizeof(double)*IMAGEPIX)+sizeof(ui);
+	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*4+2*(sizeof(double)*IMAGEPIX);
 	cudaStatus = cudaMalloc((void**)&GPUptr, GPUtotalBufferSize);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed! Can't allocate GPU memory for buffers");
@@ -682,12 +735,12 @@ int main(int argc, char **argv)
 	NoiseMap = GPUCopyImg + IMAGEPIX;  // add the previous image/array of noisy pixel intensities
 	KernelIndices = NoiseMap + IMAGEPIX;
 	NoisyPixelCoords = (pixelCoords*)(KernelIndices + IMAGEPIX);
-	GlobalMax = (ui*)(NoisyPixelCoords + IMAGEPIX);
+	GPU_PREV_BW = (double*)(NoisyPixelCoords+IMAGEPIX);
+	GPU_CURR_BW = GPU_PREV_BW + IMAGEPIX;
+	GlobalMax = (ui*)(GPU_CURR_BW + IMAGEPIX);
 	GlobalMin = GlobalMax+1;
 	NumNoisyPixelsGPU = GlobalMin+1;
-	GPU_PREV_BW = (double*)(NumNoisyPixelsGPU+1);
-	GPU_CURR_BW = GPU_PREV_BW + IMAGEPIX;
-	GPU_SAD = (ui*)(GPU_CURR_BW + IMAGEPIX);
+	GPU_SAD = NumNoisyPixelsGPU+1;
 
 	
 	// Copy input vectors from host memory to GPU buffers.
@@ -698,7 +751,7 @@ int main(int argc, char **argv)
 	}
 
 	// Copy mutex initializations from CPU to GPU
-	cudaStatus = cudaMemcpy(GlobalMax, mutexInit, 3*sizeof(ui), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(GlobalMax, mutexInit, 4*sizeof(ui), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy for mutex initializations CPU to GPU  failed!");
 		exit(EXIT_FAILURE);
@@ -725,6 +778,9 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
+	// puts("got here");
+	// return 0;
+
 	findNoisyPixels <<< NumBlocks, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, GlobalMax, GlobalMin, NumNoisyPixelsGPU, IPH, IPV);
 	
 	// cudaDeviceSynchronize waits for the kernel to finish, and returns
@@ -745,9 +801,9 @@ int main(int argc, char **argv)
 
 
 	// only schedule as many threads are needed for NoisyPixelListLength
-	NumBlocks = CEIL(NumNoisyPixelsCPU, ThrPerBlk);
+	NumBlocksNP = CEIL(NumNoisyPixelsCPU, ThrPerBlk);
 	
-	determineMasks <<< NumBlocks, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, KernelIndices, NumNoisyPixelsCPU, IPH, R);
+	determineMasks <<< NumBlocksNP, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, KernelIndices, NumNoisyPixelsCPU, IPH, R);
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
@@ -755,44 +811,69 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-
-	// progress tracking 
-	do{
-
-	// NoisyPixCopy() here
-	NoisyPixCopy <<< NumBlocks, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH);
-
-	Convolute <<< NumBlocks, ThrPerBlk >>> (GPU_CURR_BW, GPU_PREV_BW,  NoisyPixelCoords,  KernelIndices, NumNoisyPixelsCPU, IPH);
-
-	SAD <<< NumBlocks, ThrPerBlk >>> (GPU_SAD, GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH, IPV);
-
-	// CudaMemcpy the SAD from GPU to CPU here
-	cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(ui), cudaMemcpyDeviceToHost);
+	PixCopy <<< NumBlocks, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, IMAGEPIX);
+	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy of SAD from GPU to CPU  failed!");
+		fprintf(stderr, "\n\ncudaDeviceSynchronize for PixCopy returned error code %d after launching the kernel!\n", cudaStatus);
 		exit(EXIT_FAILURE);
 	}
 
 
-	} while(CPU_SAD > T);
+	// progress tracking 
+	for(int y = 0; y < 1; y++) {
+	//do{
+		
+		Convolute <<< NumBlocksNP, ThrPerBlk >>> (GPU_CURR_BW, GPU_PREV_BW,  NoisyPixelCoords,  KernelIndices, NumNoisyPixelsCPU, IPH);
 
-	// NOTE: must convert floating point B&W back to unsigned char format
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "\n\n cudaDeviceSynchronize for Convolute returned error code %d after launching the kernel!\n", cudaStatus);
+			exit(EXIT_FAILURE);
+		}
+
+		SAD <<< NumBlocksNP, ThrPerBlk >>> (GPU_SAD, GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH, IPV);
+
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "\n\n cudaDeviceSynchronize for SAD returned error code %d after launching the kernel!\n", cudaStatus);
+			exit(EXIT_FAILURE);
+		}
+
+		NoisyPixCopy <<< NumBlocksNP, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH);
+
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "\n\n cudaDeviceSynchronize for NoisyPixCopy returned error code %d after launching the kernel!\n", cudaStatus);
+			exit(EXIT_FAILURE);
+		}
+
+		// CudaMemcpy the SAD from GPU to CPU here
+		cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(ui), cudaMemcpyDeviceToHost);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy of SAD from GPU to CPU  failed!");
+			exit(EXIT_FAILURE);
+		}
+
+		printf("The SAD is %d\n", CPU_SAD);
+
+	} //while(CPU_SAD > T);
 
 
-	
-	// printf("\n*****************************\n");
-	// printf("The number of noisy pixels found was %d\n", NumNoisyPixelsCPU);
-	// printf("*****************************\n");
+
+	// must convert floating point B&W back to unsigned char format
+	NumBlocks = IPV*BlkPerRow;
+	RGBKernel <<< NumBlocks, ThrPerBlk >>> (GPUImg, GPU_CURR_BW, IPH);
+	GPUResult = GPUImg;
 
 
 	GPUDataTransfer = GPUtotalBufferSize;
 
-	// Copy output (results) from GPU buffer to host (CPU) memory.
-	// cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
-	// if (cudaStatus != cudaSuccess) {
-	// 	fprintf(stderr, "cudaMemcpy GPU to CPU  failed!");
-	// 	exit(EXIT_FAILURE);
-	// }
+	//Copy output (results) from GPU buffer to host (CPU) memory.
+	cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy GPU to CPU  failed!");
+		exit(EXIT_FAILURE);
+	}
 
 	cudaEventRecord(time4, 0);
 
@@ -814,7 +895,7 @@ int main(int argc, char **argv)
 		free(CopyImg);
 		exit(EXIT_FAILURE);
 	}
-	//WriteBMPlin(CopyImg, OutputFileName);		// Write the flipped image back to disk
+	WriteBMPlin(CopyImg, OutputFileName);		// Write the flipped image back to disk
 	printf("\n\n--------------------------------------------------------------------------\n");
 	printf("%s    ComputeCapab=%d.%d  [max %s blocks; %d thr/blk] \n", 
 			GPUprop.name, GPUprop.major, GPUprop.minor, SupportedBlocks, MaxThrPerBlk);
