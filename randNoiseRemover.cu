@@ -34,14 +34,14 @@ typedef struct{
 
 // buffers for images
 uch *TheImg, *CopyImg;				
-uch *GPUImg, *GPUCopyImg, *GPUptr, *GPUResult, *NoiseMap, *KernelIndices, *GPU_SAD;
+uch *GPUImg, *GPUCopyImg, *GPUptr, *GPUResult, *NoiseMap, *KernelIndices;
 double *GPU_PREV_BW, *GPU_CURR_BW;
 
 // noisy pixel locations
 pixelCoords *NoisyPixelCoords;
 
 // mutex variables for tracking noisy pixels
-ui *GlobalMax, *GlobalMin, *NumNoisyPixelsGPU, *GPUmutexes;
+ui *GlobalMax, *GlobalMin, *NumNoisyPixelsGPU, *GPUmutexes, *GPU_SAD;
 
 
 #define	IPHB		ip.Hbytes
@@ -444,7 +444,7 @@ void Convolute(double *ImgCurr, double *ImgBW,  pixelCoords *pc,  uch *kernalI, 
 
 // sum of absolute differences, reconstruction progress tracking mechanism
 __global__
-void SAD(uch *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, ui Hpixels, ui Vpixels)
+void SAD(ui *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, ui Hpixels, ui Vpixels)
 {
 	// thread IDs
 	ui ThrPerBlk = blockDim.x;
@@ -459,13 +459,13 @@ void SAD(uch *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, 
 	ui MYpixIndex = i * Hpixels + j; // absolute index
 	
 	// difference of old and updated pixel values, round to nearest integer
-	uch absDiff=uch(prev[MYpixIndex]-current[MYpixIndex]+0.5);
+	int absDiff=(int)(prev[MYpixIndex]-current[MYpixIndex]+0.5);
 
 	// absolute difference
 	if(absDiff<0)
 		absDiff = -absDiff;
 	
-	atomicAdd(sad, absDiff); // update global sum
+	atomicAdd(sad, (ui)absDiff); // update global sum
 
 }
 
@@ -586,7 +586,7 @@ int main(int argc, char **argv)
 	ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;		char SupportedBlocks[100]; 
 
 	ui GPUtotalBufferSize, R = 5, T = 5, NumNoisyPixelsCPU, mutexInit[3] = {0, 255, 0};
-	uch CPU_SAD;
+	ui CPU_SAD;
 
 	strcpy(ProgName, "randNoiseRemoval");
 	switch (argc){
@@ -669,7 +669,7 @@ int main(int argc, char **argv)
 
 */
 	// allocate sufficient memory on the GPU to hold all above items
-	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3+2*(sizeof(double)*IMAGEPIX)+1;
+	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3+2*(sizeof(double)*IMAGEPIX)+sizeof(ui);
 	cudaStatus = cudaMalloc((void**)&GPUptr, GPUtotalBufferSize);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed! Can't allocate GPU memory for buffers");
@@ -687,7 +687,7 @@ int main(int argc, char **argv)
 	NumNoisyPixelsGPU = GlobalMin+1;
 	GPU_PREV_BW = (double*)(NumNoisyPixelsGPU+1);
 	GPU_CURR_BW = GPU_PREV_BW + IMAGEPIX;
-	GPU_SAD = (uch)(GPU_CURR_BW + IMAGEPIX);
+	GPU_SAD = (ui*)(GPU_CURR_BW + IMAGEPIX);
 
 	
 	// Copy input vectors from host memory to GPU buffers.
@@ -767,7 +767,7 @@ int main(int argc, char **argv)
 	SAD <<< NumBlocks, ThrPerBlk >>> (GPU_SAD, GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH, IPV);
 
 	// CudaMemcpy the SAD from GPU to CPU here
-	cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(uch), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(ui), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy of SAD from GPU to CPU  failed!");
 		exit(EXIT_FAILURE);
