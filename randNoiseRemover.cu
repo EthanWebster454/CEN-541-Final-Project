@@ -35,6 +35,7 @@ typedef struct{
 // buffers for images
 uch *TheImg, *CopyImg;				
 uch *GPUImg, *GPUCopyImg, *GPUptr, *GPUResult, *NoiseMap, *KernelIndices;
+double *GPU_PREV_BW, *GPU_CURR_BW, *GPU_SAD;
 
 // noisy pixel locations
 pixelCoords *NoisyPixelCoords;
@@ -181,11 +182,11 @@ double mask0[3][3] = {  {0.1036,	0.1464,	0.1036},
 
 // horizontal 5x5 mask
 __constant__
-double mask1[5][5] = {  {0,			0,		0,			0,		0},
-						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465},
-						{0.0520,	0.1040,	0,			0.1040,	0.0520},
-						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465},
-						{0,			0,		0,			0,		0}};
+double mask1[5][5] = {  {0,			0,		0,			0,		0		},
+						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465	},
+						{0.0520,	0.1040,	0,			0.1040,	0.0520	},
+						{0.0465,	0.0735,	0.1040,		0.0735,	0.0465	},
+						{0,			0,		0,			0,		0		}};
 
 //vertical 5x5 mask						
 __constant__
@@ -197,26 +198,26 @@ double mask2[5][5] = {  {0,	0.0465,	0.0520,	0.0465,	0},
 
 //45 degree 7x7 mask					
 __constant__
-double mask3[7][7] = {	{0,			0,		0,		0,		0.0251,	0,		0},
-						{0,			0,		0,		0.0397,	0.0355,	0.0281,	0},
-						{0,			0,		0.0562,	0.0794,	0.0562,	0.0355,	0.0251},
-						{0,			0.0397,	0.0794,	0,		0.0794,	0.0397,	0},
-						{0.0251,	0.0355,	0.0562,	0.0794,	0.0562,	0,		0},
-						{0,			0.0281,	0.0355,	0.0397,	0,		0,		0},
-						{0,			0,		0.0251,	0,		0,		0,		0}};
+double mask3[7][7] = {	{0,			0,		0,		0,		0.0251,	0,		0		},
+						{0,			0,		0,		0.0397,	0.0355,	0.0281,	0		},
+						{0,			0,		0.0562,	0.0794,	0.0562,	0.0355,	0.0251	},
+						{0,			0.0397,	0.0794,	0,		0.0794,	0.0397,	0		},
+						{0.0251,	0.0355,	0.0562,	0.0794,	0.0562,	0,		0		},
+						{0,			0.0281,	0.0355,	0.0397,	0,		0,		0		},
+						{0,			0,		0.0251,	0,		0,		0,		0		}};
 						
 //135 degree 7x7 mask							
 __constant__						
-double mask4[7][7] = {  {0,			0,			0.0251,	0,		0,		0,		0},
-						{0,			0.0281,		0.0355,	0.0397,	0,		0,		0},
-						{0.0251,	0.0355,		0.0562,	0.0794,	0.0562,	0,		0},
-						{0,			0.0397,		0.0794,	0,		0.0794,	0.0397,	0},
-						{0,			0,			0.0562,	0.0794,	0.0562,	0.0355,	0.0251},
-						{0,			0,			0,		0.0397,	0.0355,	0.0281,	0},
-						{0,			0,			0,		0,		0.0251,	0,		0}};
+double mask4[7][7] = {  {0,			0,		0.0251,	0,		0,		0,		0		},
+						{0,			0.0281,	0.0355,	0.0397,	0,		0,		0		},
+						{0.0251,	0.0355,	0.0562,	0.0794,	0.0562,	0,		0		},
+						{0,			0.0397,	0.0794,	0,		0.0794,	0.0397,	0		},
+						{0,			0,		0.0562,	0.0794,	0.0562,	0.0355,	0.0251	},
+						{0,			0,		0,		0.0397,	0.0355,	0.0281,	0		},
+						{0,			0,		0,		0,		0.0251,	0,		0		}};
 
 
-// Kernel that adds salt&pepper noise of given probability density to an image
+// Kernel that determines appropriate inpainting mask to use based on surrounding noiseless pixels
 __global__
 void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *kernelIndices, ui ListLength, ui Hpixels, ui R) {
 
@@ -432,6 +433,8 @@ void Convolute(double *imgCurr, double *imgBW,  pixelCoords *pc,  uch *kernalI, 
 						C += (ImgBW[index] * mask4[a + 3][b + 3]);
 					}
 				}
+
+				// assign convolution sum to current noisy pixel index
 				ImgCurr[MYpixIndex] = C;
 				break;
 	}
@@ -575,6 +578,7 @@ int main(int argc, char **argv)
 {
 
 	float totalTime, tfrCPUtoGPU, tfrGPUtoCPU, kernelExecutionTime; // GPU code run times
+	double CPU_SAD;
 	cudaError_t cudaStatus;
 	cudaEvent_t time1, time2, time3, time4;
 	char InputFileName[255], OutputFileName[255], ProgName[255];
@@ -664,7 +668,7 @@ int main(int argc, char **argv)
 
 */
 	// allocate sufficient memory on the GPU to hold all above items
-	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3;
+	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3+2*(sizeof(double)*IMAGEPIX)+sizeof(double);
 	cudaStatus = cudaMalloc((void**)&GPUptr, GPUtotalBufferSize);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed! Can't allocate GPU memory for buffers");
@@ -680,6 +684,9 @@ int main(int argc, char **argv)
 	GlobalMax = (ui*)(NoisyPixelCoords + IMAGEPIX);
 	GlobalMin = GlobalMax+1;
 	NumNoisyPixelsGPU = GlobalMin+1;
+	GPU_PREV_BW = (double*)(NumNoisyPixelsGPU+1);
+	GPU_CURR_BW = GPU_PREV_BW + IMAGEPIX;
+	GPU_SAD = GPU_CURR_BW + IMAGEPIX;
 
 	
 	// Copy input vectors from host memory to GPU buffers.
@@ -708,6 +715,7 @@ int main(int argc, char **argv)
 	
 	BlkPerRow = CEIL(ip.Hpixels, ThrPerBlk);
 	NumBlocks = IPV*BlkPerRow;
+	
 
 	BWKernel <<< NumBlocks, ThrPerBlk >>> (GPUCopyImg, GPUImg, GPU_FP_BW, IPH);
 	cudaStatus = cudaDeviceSynchronize();
