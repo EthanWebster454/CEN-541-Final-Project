@@ -316,11 +316,157 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 
 }
 
+//3x3 mask
+__constant__
+double mask0[3][3] = {  {0.1036,0.1464,0.1036},
+						{0.1464,0,0.1464},
+						{0.1036,0.1464,0.1036}};	
+						
+//horizontal 5x5 mask
+__constant__
+double mask1[5][5] = {  {0,0,0,0,0},
+						{0.0465,0.0735,0.1040,0.0735,0.0465},
+						{0.0520,0.1040,0,0.1040,0.0520},
+						{0.0465,0.0735,0.1040,0.0735,0.0465},
+						{0,0,0,0,0}};
+
+//vertical 5x5 mask						
+__constant__
+double mask2[5][5] = {  {0,0.0465,0.0520,0.0465,0},
+						{0,0.0735,0.1040,0.0735,0},
+						{0,0.1040,0,0.1040,0},
+						{0,0.0735,0.1040,0.0735,0},
+						{0,0.0465,0.0520,0.0465,0}};
+
+//45 degree 7x7 mask					
+__constant__
+double mask3[7][7] = {	{0,0,0,0,0.0251,0,0},
+						{0,0,0,0.0397,0.0355,0.0281,0},
+						{0,0,0.0562,0.0794,0.0562,0.0355,0.0251},
+						{0,0.0397,0.0794,0,0.0794,0.0397,0},
+						{0.0251,0.0355,0.0562,0.0794,0.0562,0,0},
+						{0,0.0281,0.0355,0.0397,0,0,0},
+						{0,0,0.0251,0,0,0,0}};
+						
+//135 degree 7x7 mask							
+__constant__						
+double mask4[7][7] = {  {0,0,0.0251,0,0,0,0},
+						{0,0.0281,0.0355,0.0397,0,0,0},
+						{0.0251,0.0355,0.0562,0.0794,0.0562,0,0},
+						{0,0.0397,0.0794,0,0.0794,0.0397,0},
+						{0,0,0.0562,0.0794,0.0562,0.0355,0.0251},
+						{0,0,0,0.0397,0.0355,0.0281,0},
+						{0,0,0,0,0.0251,0,0}};
+
+// convolutions based on kernel indices
+__global__
+void Convolute(double *imgCurr, double *imgBW,  pixelCoords *pc,  uch *kernalI, ui numNoisy, ui Hpixels)
+{
+	ui ThrPerBlk = blockDim.x;
+	ui MYbid = blockIdx.x;
+	ui MYtid = threadIdx.x;
+	ui MYgtid = ThrPerBlk * MYbid + MYtid;
+
+	if (MYgtid >= numNoisy) return;			// index out of range
+
+	// current noisy pixel coordinates
+	ui i=pc[MYgtid].i,j=pc[MYgtid].j,m=kernalI[MYgtid];
+
+	// absolute pixel index
+	ui MYpixIndex = i * Hpixels + j;
+
+	int a,row,col,index;
+	double C = 0.0;
+
+	switch(m)
+	{
+		case 0: for (a = -1; a <= 1; a++){
+					for (b = -1; b <= 1; b++){
+						row = i + a;
+						col = j + b;
+						index = row*Hpixels + col;
+						C += (ImgBW[index] * mask0[a + 1][b + 1]);
+					}
+				}
+				ImgCurr[MYpixIndex] = C;
+				break;
+		case 1: for (a = -2; a <= 2; a++){
+					for (b = -2; b <= 2; b++){
+						row = i + a;
+						col = j + b;
+						index = row*Hpixels + col;
+						C += (ImgBW[index] * mask1[a + 2][b + 2]);
+					}
+				}
+				ImgCurr[MYpixIndex] = C;
+				break;
+		case 2: for (a = -2; a <= 2; a++){
+					for (b = -2; b <= 2; b++){
+						row = i + a;
+						col = j + b;
+						index = row*Hpixels + col;
+						C += (ImgBW[index] * mask2[a + 2][b + 2]);
+					}
+				}
+				ImgCurr[MYpixIndex] = C;
+				break;
+		case 3: for (a = -3; a <= 3; a++){
+					for (b = -3; b <= 3; b++){
+						row = i + a;
+						col = j + b;
+						index = row*Hpixels + col;
+						C += (ImgBW[index] * mask3[a + 3][b + 3]);
+					}
+				}
+				ImgCurr[MYpixIndex] = C;
+				break;
+		default: for (a = -3; a <= 3; a++){
+					for (b = -3; b <= 3; b++){
+						row = i + a;
+						col = j + b;
+						index = row*Hpixels + col;
+						C += (ImgBW[index] * mask4[a + 3][b + 3]);
+					}
+				}
+				ImgCurr[MYpixIndex] = C;
+				break;
+	}
+		
+}
+
+
+// sum of absolute differences, reconstruction progress tracking mechanism
+__global__
+void SAD(double *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, unsigned int Hpixels, unsigned int Vpixels)
+{
+	// thread IDs
+	ui ThrPerBlk = blockDim.x;
+	ui MYbid = blockIdx.x;
+	ui MYtid = threadIdx.x;
+	ui MYgtid = ThrPerBlk * MYbid + MYtid;
+	
+	if (MYgtid >= numNoisy) return;			// index out of range
+
+	ui i=pc[MYgtid].i, j=pc[MYgtid].j; // current noisy pixel coordinates
+
+	ui MYpixIndex = i * Hpixels + j; // absolute index
+	
+	// difference
+	absDiff=prev[MYpixIndex]-current[MYpixIndex];
+
+	// absolute difference
+	if(absDiff<0)
+		absDiff=absDiff*(-1);
+	
+	atomicAdd(sad, absDiff); // update global sum
+
+}
+
 
 // Kernel that calculates a B&W image from an RGB image
 // resulting image has a double type for each pixel position
 __global__
-void BWKernel(uch *ImgBW, uch *ImgGPU, ui Hpixels)
+void BWKernel(uch *ImgBW, uch *ImgGPU, double *ImgfpBW, ui Hpixels)
 {
 	ui ThrPerBlk = blockDim.x;
 	ui MYbid = blockIdx.x;
@@ -342,21 +488,27 @@ void BWKernel(uch *ImgBW, uch *ImgGPU, ui Hpixels)
 	G = (double)ImgGPU[MYsrcIndex + 1];
 	R = (double)ImgGPU[MYsrcIndex + 2];
 	ImgBW[MYpixIndex] = (uch)((R+G+B)/3.0);
+	ImgfpBW[MYpixIndex] = (R+G+B)/3.0;
 }
 
 
 // Kernel that copies an image from one part of the
 // GPU memory (ImgSrc) to another (ImgDst)
 __global__
-void PixCopy(uch *ImgDst, uch *ImgSrc, ui FS)
+void NoisyPixCopy(double *NPDst, double *ImgSrc, pixelCoords *pc, ui NoisyPixelListLength, ui Hpixels)
 {
 	ui ThrPerBlk = blockDim.x;
 	ui MYbid = blockIdx.x;
 	ui MYtid = threadIdx.x;
 	ui MYgtid = ThrPerBlk * MYbid + MYtid;
 
-	if (MYgtid > FS) return;				// outside the allocated memory
-	ImgDst[MYgtid] = ImgSrc[MYgtid];
+	if (MYgtid > NoisyPixelListLength) return;// outside the allocated memory
+
+	pixelCoords currCoord = pc[MYgtid];
+
+	ui srcIndex = currCoord.i * Hpixels + currCoord.j;
+
+	NPDst[srcIndex] = ImgSrc[srcIndex];
 }
 
 
@@ -502,6 +654,10 @@ int main(int argc, char **argv)
 	GlobalMax : sizeof(ui)
 	GlobalMin : sizeof(ui)
 	NumNoisyPixelsGPU : sizeof(ui)
+	GPU_PREV_BW : sizeof(double) * IMAGEPIX
+	GPU_CURR_BW : sizeof(double) * IMAGEPIX  
+	 ***********************
+
 */
 	// allocate sufficient memory on the GPU to hold all above items
 	GPUtotalBufferSize = IMAGESIZE+(IMAGEPIX*sizeof(pixelCoords))+IMAGEPIX*3+sizeof(ui)*3;
@@ -549,7 +705,7 @@ int main(int argc, char **argv)
 	BlkPerRow = CEIL(ip.Hpixels, ThrPerBlk);
 	NumBlocks = IPV*BlkPerRow;
 
-	BWKernel <<< NumBlocks, ThrPerBlk >>> (GPUCopyImg, GPUImg, IPH);
+	BWKernel <<< NumBlocks, ThrPerBlk >>> (GPUCopyImg, GPUImg, GPU_FP_BW, IPH);
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "\n\n cudaDeviceSynchronize for B&WKernel returned error code %d after launching the kernel!\n", cudaStatus);
@@ -586,10 +742,34 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
+
+	// progress tracking 
+	do{
+
+	// NoisyPixCopy() here
+	NoisyPixCopy <<< NumBlocks, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH);
+
+	Convolute <<< NumBlocks, ThrPerBlk >>> (GPU_CURR_BW, GPU_PREV_BW,  NoisyPixelCoords,  KernelIndices, NumNoisyPixelsCPU, IPH);
+
+	SAD <<< NumBlocks, ThrPerBlk >>> (GPU_SAD, GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH, IPV);
+
+	// CudaMemcpy the SAD from GPU to CPU here
+	cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(double), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy GPU to CPU  failed!");
+		exit(EXIT_FAILURE);
+	}
+
+
+	} while(CPU_SAD > T);
+
+	// NOTE: must convert floating point B&W back to unsigned char format
+
+
 	
-	printf("\n*****************************\n");
-	printf("The number of noisy pixels found was %d\n", NumNoisyPixelsCPU);
-	printf("*****************************\n");
+	// printf("\n*****************************\n");
+	// printf("The number of noisy pixels found was %d\n", NumNoisyPixelsCPU);
+	// printf("*****************************\n");
 
 
 	GPUDataTransfer = GPUtotalBufferSize;
@@ -600,6 +780,7 @@ int main(int argc, char **argv)
 	// 	fprintf(stderr, "cudaMemcpy GPU to CPU  failed!");
 	// 	exit(EXIT_FAILURE);
 	// }
+
 	cudaEventRecord(time4, 0);
 
 	cudaEventSynchronize(time1);
