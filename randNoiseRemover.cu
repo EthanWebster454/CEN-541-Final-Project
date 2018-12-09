@@ -863,8 +863,7 @@ int main(int argc, char **argv)
 	} while(CPU_SAD > T);
 
 
-	// must convert floating point B&W back to unsigned char format
-	NumBlocks = IPV*BlkPerRow;
+	// must convert floating point B&W back to unsigned char formats
 	RGBKernel <<< NumBlocks, ThrPerBlk >>> (GPUImg, GPU_CURR_BW, IPH);
 	GPUResult = GPUImg;
 
