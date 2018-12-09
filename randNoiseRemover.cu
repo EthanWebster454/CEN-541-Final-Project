@@ -630,11 +630,11 @@ void WriteBMPlin(uch *Img, char* fn)
 int main(int argc, char **argv)
 {
 
-	float totalTime, tfrCPUtoGPU, tfrGPUtoCPU, kernelExecutionTime; // GPU code run times
+	float /*totalTime, tfrCPUtoGPU, tfrGPUtoCPU,*/ kernelExecutionTime; // GPU code run times
 	cudaError_t cudaStatus;
-	cudaEvent_t time1, time2, time3, time4;
+	cudaEvent_t time1, time2;//, time3, time4;
 	char InputFileName[255], OutputFileName[255], ProgName[255];
-	ui BlkPerRow, ThrPerBlk=256, NumBlocks, GPUDataTransfer, NumBlocksNP;
+	ui BlkPerRow, ThrPerBlk=256, NumBlocks, /* GPUDataTransfer,*/ NumBlocksNP;
 	cudaDeviceProp GPUprop;
 	ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;		char SupportedBlocks[100]; 
 
@@ -700,10 +700,10 @@ int main(int argc, char **argv)
 
 	cudaEventCreate(&time1);
 	cudaEventCreate(&time2);
-	cudaEventCreate(&time3);
-	cudaEventCreate(&time4);
+	// cudaEventCreate(&time3);
+	// cudaEventCreate(&time4);
 
-	cudaEventRecord(time1, 0);		// Time stamp at the start of the GPU transfer
+	
 
 /*
 	>>> GPU STORAGE DETAILS >>>
@@ -742,7 +742,7 @@ int main(int argc, char **argv)
 	NumNoisyPixelsGPU = GlobalMin+1;
 	GPU_SAD = NumNoisyPixelsGPU+1;
 
-	
+
 	// Copy input vectors from host memory to GPU buffers.
 	cudaStatus = cudaMemcpy(GPUImg, TheImg, IMAGESIZE, cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
@@ -764,7 +764,7 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaEventRecord(time2, 0);		// Time stamp after the CPU --> GPU tfr is done
+	cudaEventRecord(time1, 0);		// Time stamp at the start of the GPU transfer
 
 	
 	BlkPerRow = CEIL(ip.Hpixels, ThrPerBlk);
@@ -778,8 +778,6 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	// puts("got here");
-	// return 0;
 
 	findNoisyPixels <<< NumBlocks, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, GlobalMax, GlobalMin, NumNoisyPixelsGPU, IPH, IPV);
 	
@@ -791,7 +789,7 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaEventRecord(time3, 0);
+	//cudaEventRecord(time3, 0);
 
 	cudaStatus = cudaMemcpy(&NumNoisyPixelsCPU, NumNoisyPixelsGPU, sizeof(ui), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
@@ -860,10 +858,9 @@ int main(int argc, char **argv)
 			exit(EXIT_FAILURE);
 		}
 
-		printf("The SAD is %d\n", CPU_SAD);
+		//printf("The SAD is %d\n", CPU_SAD);
 
 	} while(CPU_SAD > T);
-
 
 
 	// must convert floating point B&W back to unsigned char format
@@ -871,8 +868,9 @@ int main(int argc, char **argv)
 	RGBKernel <<< NumBlocks, ThrPerBlk >>> (GPUImg, GPU_CURR_BW, IPH);
 	GPUResult = GPUImg;
 
+	cudaEventRecord(time2, 0);		// Time stamp after the CPU --> GPU tfr is done
 
-	GPUDataTransfer = GPUtotalBufferSize;
+	//GPUDataTransfer = GPUtotalBufferSize;
 
 	//Copy output (results) from GPU buffer to host (CPU) memory.
 	cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
@@ -881,17 +879,17 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaEventRecord(time4, 0);
+	//cudaEventRecord(time4, 0);
 
 	cudaEventSynchronize(time1);
 	cudaEventSynchronize(time2);
-	cudaEventSynchronize(time3);
-	cudaEventSynchronize(time4);
+	//cudaEventSynchronize(time3);
+	//cudaEventSynchronize(time4);
 
-	cudaEventElapsedTime(&totalTime, time1, time4);
-	cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
-	cudaEventElapsedTime(&kernelExecutionTime, time2, time3);
-	cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
+	//cudaEventElapsedTime(&totalTime, time1, time4);
+	//cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
+	cudaEventElapsedTime(&kernelExecutionTime, time1, time2);
+	//cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
 
 	cudaStatus = cudaDeviceSynchronize();
 	//checkError(cudaGetLastError());	// screen for errors in kernel launches
@@ -908,20 +906,20 @@ int main(int argc, char **argv)
 	printf("--------------------------------------------------------------------------\n");
 	printf("%s %s %s %d %d %u   [%u BLOCKS, %u BLOCKS/ROW]\n", ProgName, InputFileName, OutputFileName,
 			T, R, ThrPerBlk, NumBlocks, BlkPerRow);
-	printf("--------------------------------------------------------------------------\n");
-	printf("CPU->GPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrCPUtoGPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrCPUtoGPU));
-	printf("Kernel Execution    =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", kernelExecutionTime, DATAMB(GPUDataTransfer), DATABW(GPUDataTransfer, kernelExecutionTime));
-	printf("GPU->CPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrGPUtoCPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrGPUtoCPU));
-	printf("--------------------------------------------------------------------------\n");
-	printf("Total time elapsed  =%7.2f ms       %4d MB  ...  %6.2f GB/s\n", totalTime, DATAMB((2 * IMAGESIZE + GPUDataTransfer)), DATABW((2 * IMAGESIZE + GPUDataTransfer), totalTime));
+	// printf("--------------------------------------------------------------------------\n");
+	// printf("CPU->GPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrCPUtoGPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrCPUtoGPU));
+	printf("Kernel Execution    =%7.2f ms\n", kernelExecutionTime);//, DATAMB(GPUDataTransfer), DATABW(GPUDataTransfer, kernelExecutionTime));  ...  %4d MB  ...  %6.2f GB/s
+	// printf("GPU->CPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrGPUtoCPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrGPUtoCPU));
+	// printf("--------------------------------------------------------------------------\n");
+	// printf("Total time elapsed  =%7.2f ms       %4d MB  ...  %6.2f GB/s\n", totalTime, DATAMB((2 * IMAGESIZE + GPUDataTransfer)), DATABW((2 * IMAGESIZE + GPUDataTransfer), totalTime));
 	printf("--------------------------------------------------------------------------\n\n");
 
 	// Deallocate CPU, GPU memory and destroy events.
 	cudaFree(GPUptr);
 	cudaEventDestroy(time1);
 	cudaEventDestroy(time2);
-	cudaEventDestroy(time3);
-	cudaEventDestroy(time4);
+	// cudaEventDestroy(time3);
+	// cudaEventDestroy(time4);
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Parallel Nsight and Visual Profiler to show complete traces.
 	cudaStatus = cudaDeviceReset();
