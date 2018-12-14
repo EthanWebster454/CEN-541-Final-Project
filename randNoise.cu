@@ -1,3 +1,7 @@
+// Salt and pepper noise simulation with Cuda C/C++
+// Original framework for code taken from imflipG.cu
+// Modified by Ethan Webster
+
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <device_launch_parameters.h>
@@ -21,7 +25,7 @@ typedef unsigned int  ui;
 
 uch *TheImg, *CopyImg;					// Where images are stored in CPU
 uch *GPUImg, *GPUCopyImg, *GPUptr, *GPUResult;	// Where images are stored in GPU
-//ui *GPULocations;
+
 
 struct ImgProp{
 	int Hpixels;
@@ -143,18 +147,6 @@ void PixCopy(uch *ImgDst, uch *ImgSrc, ui FS)
 }
 
 
-/*
-// helper function that wraps CUDA API calls, reports any error and exits
-void chkCUDAErr(cudaError_t error_id)
-{
-	if (error_id != CUDA_SUCCESS)
-	{
-		printf("CUDA ERROR :::%\n", cudaGetErrorString(error_id));
-		exit(EXIT_FAILURE);
-	}
-}
-*/
-
 
 // Read a 24-bit/pixel BMP file into a 1D linear array.
 // Allocate memory to store the 1D image and return its pointer.
@@ -201,13 +193,11 @@ void WriteBMPlin(uch *Img, char* fn)
 int main(int argc, char **argv)
 {
 
-	float totalTime, tfrCPUtoGPU, tfrGPUtoCPU, kernelExecutionTime; // GPU code run times
 	cudaError_t cudaStatus;
-	cudaEvent_t time1, time2, time3, time4;
 	char InputFileName[255], OutputFileName[255], ProgName[255];
-	ui BlkPerRow, ThrPerBlk=256, NumBlocks, GPUDataTransfer;
-	cudaDeviceProp GPUprop;
-	ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;		char SupportedBlocks[100]; 
+	ui BlkPerRow, ThrPerBlk=256, NumBlocks;
+	//cudaDeviceProp GPUprop;
+	//ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;		char SupportedBlocks[100]; 
 
 	ui amt, GPUtotalBufferSize;
 
@@ -220,11 +210,11 @@ int main(int argc, char **argv)
 	case 3:  strcpy(InputFileName, argv[1]);
 			 strcpy(OutputFileName, argv[2]);
 			 break;
-	default: printf("\n\nUsage:   %s InputFilename OutputFilename [V/H/C/T] [ThrPerBlk]", ProgName);
+	default: printf("\n\nUsage:   %s InputFilename OutputFilename [NoiseDensity] [ThrPerBlk]", ProgName);
 			 printf("\n\nExample: %s Astronaut.bmp Output.bmp", ProgName);
-			 printf("\n\nExample: %s Astronaut.bmp Output.bmp H", ProgName);
-			 printf("\n\nExample: %s Astronaut.bmp Output.bmp V  128",ProgName);
-			 printf("\n\nH=horizontal flip, V=vertical flip, T=Transpose, C=copy image\n\n");
+			 printf("\n\nExample: %s Astronaut.bmp Output.bmp 50", ProgName);
+			 printf("\n\nExample: %s Astronaut.bmp Output.bmp 50  128",ProgName);
+			 printf("\n\nNoise Density is in percent, from 0-100\n\n");
 			 exit(EXIT_FAILURE);
 	}
 	if (amt > 100) {
@@ -264,18 +254,11 @@ int main(int argc, char **argv)
 	}
 
 	
-	cudaGetDeviceProperties(&GPUprop, 0);
-	SupportedKBlocks = (ui)GPUprop.maxGridSize[0] * (ui)GPUprop.maxGridSize[1] * (ui)GPUprop.maxGridSize[2] / 1024;
-	SupportedMBlocks = SupportedKBlocks / 1024;
-	sprintf(SupportedBlocks, "%u %c", (SupportedMBlocks >= 5) ? SupportedMBlocks : SupportedKBlocks, (SupportedMBlocks >= 5) ? 'M' : 'K');
-	MaxThrPerBlk = (ui)GPUprop.maxThreadsPerBlock;
-
-	cudaEventCreate(&time1);
-	cudaEventCreate(&time2);
-	cudaEventCreate(&time3);
-	cudaEventCreate(&time4);
-
-	cudaEventRecord(time1, 0);		// Time stamp at the start of the GPU transfer
+	// cudaGetDeviceProperties(&GPUprop, 0);
+	// SupportedKBlocks = (ui)GPUprop.maxGridSize[0] * (ui)GPUprop.maxGridSize[1] * (ui)GPUprop.maxGridSize[2] / 1024;
+	// SupportedMBlocks = SupportedKBlocks / 1024;
+	// sprintf(SupportedBlocks, "%u %c", (SupportedMBlocks >= 5) ? SupportedMBlocks : SupportedKBlocks, (SupportedMBlocks >= 5) ? 'M' : 'K');
+	// MaxThrPerBlk = (ui)GPUprop.maxThreadsPerBlock;
 
 	// allocate sufficient memory on the GPU to hold B&W image and grayscale output image
 	GPUtotalBufferSize = IMAGEPIX+IMAGESIZE;
@@ -296,11 +279,6 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaEventRecord(time2, 0);		// Time stamp after the CPU --> GPU tfr is done
-
-	
-	//dim3 dimBlock(ThrPerBlk);
-	//dim3 dimGrid(ip.Hpixels*BlkPerRow);
 	BlkPerRow = CEIL(ip.Hpixels, ThrPerBlk);
 	NumBlocks = IPV*BlkPerRow;
 
@@ -311,15 +289,10 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	//GPUResult = GPUCopyImg;
-
-	//NumBlocks = (IMAGEPIX + ThrPerBlk -1)/ThrPerBlk;
-
+	// add random noise to the image
 	inputNL = 255.0f*(double)amt/100.0f;
 		 corruptPixels <<< NumBlocks, ThrPerBlk >>> (GPUImg, GPUCopyImg, IPH, IPV, inputNL);
 				  GPUResult = GPUImg;
-				  GPUDataTransfer = 2*IMAGESIZE;
-
 
 
 	// cudaDeviceSynchronize waits for the kernel to finish, and returns
@@ -329,7 +302,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "\n\ncudaDeviceSynchronize 2 returned error code %d after launching the kernel!\n", cudaStatus);
 		exit(EXIT_FAILURE);
 	}
-	cudaEventRecord(time3, 0);
+	
 
 	// Copy output (results) from GPU buffer to host (CPU) memory.
 	cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
@@ -337,17 +310,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "cudaMemcpy GPU to CPU  failed!");
 		exit(EXIT_FAILURE);
 	}
-	cudaEventRecord(time4, 0);
-
-	cudaEventSynchronize(time1);
-	cudaEventSynchronize(time2);
-	cudaEventSynchronize(time3);
-	cudaEventSynchronize(time4);
-
-	cudaEventElapsedTime(&totalTime, time1, time4);
-	cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
-	cudaEventElapsedTime(&kernelExecutionTime, time2, time3);
-	cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
+	
 
 	cudaStatus = cudaDeviceSynchronize();
 	//checkError(cudaGetLastError());	// screen for errors in kernel launches
@@ -357,29 +320,16 @@ int main(int argc, char **argv)
 		free(CopyImg);
 		exit(EXIT_FAILURE);
 	}
+
+
 	WriteBMPlin(CopyImg, OutputFileName);		// Write the flipped image back to disk
+
 	printf("\n\n--------------------------------------------------------------------------\n");
-	printf("%s    ComputeCapab=%d.%d  [max %s blocks; %d thr/blk] \n", 
-			GPUprop.name, GPUprop.major, GPUprop.minor, SupportedBlocks, MaxThrPerBlk);
-	printf("--------------------------------------------------------------------------\n");
-	printf("%s %s %s %d %u   [%u BLOCKS, %u BLOCKS/ROW]\n", ProgName, InputFileName, OutputFileName,
-			amt, ThrPerBlk, NumBlocks, BlkPerRow);
-	printf("--------------------------------------------------------------------------\n");
-	printf("CPU->GPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrCPUtoGPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrCPUtoGPU));
-	printf("Kernel Execution    =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", kernelExecutionTime, DATAMB(GPUDataTransfer), DATABW(GPUDataTransfer, kernelExecutionTime));
-	printf("GPU->CPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrGPUtoCPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrGPUtoCPU));
-	printf("--------------------------------------------------------------------------\n");
-	printf("Total time elapsed  =%7.2f ms       %4d MB  ...  %6.2f GB/s\n", totalTime, DATAMB((2 * IMAGESIZE + GPUDataTransfer)), DATABW((2 * IMAGESIZE + GPUDataTransfer), totalTime));
-	printf("--------------------------------------------------------------------------\n\n");
+	printf("Successfully added %d%% noise to the given image and converted to grayscale.\n", amt);
 
 	// Deallocate CPU, GPU memory and destroy events.
 	cudaFree(GPUptr);
-	cudaEventDestroy(time1);
-	cudaEventDestroy(time2);
-	cudaEventDestroy(time3);
-	cudaEventDestroy(time4);
-	// cudaDeviceReset must be called before exiting in order for profiling and
-	// tracing tools such as Parallel Nsight and Visual Profiler to show complete traces.
+
 	cudaStatus = cudaDeviceReset();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaDeviceReset failed!");

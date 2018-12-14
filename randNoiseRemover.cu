@@ -1,3 +1,8 @@
+// Salt and pepper noise removal via inpainting with Cuda C/C++
+// Original framework for code taken from imflipG.cu
+// Modified by Ethan Webster and Ashley Suchy
+
+
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <device_launch_parameters.h>
@@ -19,6 +24,7 @@ typedef unsigned char uch;
 typedef unsigned long ul;
 typedef unsigned int  ui;
 
+//image properties struct
 struct ImgProp{
 	int Hpixels;
 	int Vpixels;
@@ -26,13 +32,13 @@ struct ImgProp{
 	ul Hbytes;
 } ip;
 
-
+// noisy pixel location struct (raster coordinates)
 typedef struct{
-	ui i;
-	ui j;
+	ui i; // row
+	ui j; // column
 }pixelCoords;
 
-// buffers for images
+// buffers for images, noisy pixel matrix, and kernel indices
 uch *TheImg, *CopyImg;				
 uch *GPUImg, *GPUCopyImg, *GPUptr, *GPUResult, *NoiseMap, *KernelIndices;
 double *GPU_PREV_BW, *GPU_CURR_BW;
@@ -40,7 +46,7 @@ double *GPU_PREV_BW, *GPU_CURR_BW;
 // noisy pixel locations
 pixelCoords *NoisyPixelCoords;
 
-// mutex variables for tracking noisy pixels
+// mutex variables for tracking noisy pixels and SAD
 ui *GlobalMax, *GlobalMin, *NumNoisyPixelsGPU, *GPUmutexes, *GPU_SAD;
 
 
@@ -51,14 +57,10 @@ ui *GlobalMax, *GlobalMin, *NumNoisyPixelsGPU, *GPUmutexes, *GPU_SAD;
 #define	IMAGEPIX	(IPH*IPV)
 
 
-
 // Kernel that locates potentially noisy pixels in an image by using impulse noise detection
 __global__
 void findNoisyPixels(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, ui*globalMax, ui*globalMin, ui*ListLength, ui Hpixels, ui Vpixels)
 {
-
-	// 3x3 matrix of pixels around current pixel
-	//uch mat3x3[8]; // 3 x 3 - 1 = 8
 
 	// threads/blocks info and IDs
 	ui ThrPerBlk = blockDim.x;
@@ -71,7 +73,8 @@ void findNoisyPixels(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, ui*glob
 	ui MYrow = MYbid / BlkPerRow;
 	ui MYcol = MYgtid - MYrow*BlkPerRow*ThrPerBlk;
 
-	// leave buffer frame around image to avoid 8 edge cases for convolutions
+	// leave buffer frame around image to avoid 8 edge cases for convolutions 
+	// (this is a PERFECT example of avoiding unecessary complexity!!!)
 	if (MYcol > Hpixels-4 || MYcol < 3 || MYrow > Vpixels-4 || MYrow < 3) return;
 
 	ui MYpixIndex = MYrow * Hpixels + MYcol; // pixel index in B&W image
@@ -138,51 +141,9 @@ void findNoisyPixels(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, ui*glob
 
 	}
 
-	// if(pIJ == 255 || pIJ == 0){
-
-	// 	ui listIndex = atomicAdd(ListLength, (ui)1); 
-
-	// 	locations[listIndex].i = MYrow;
-	// 	locations[listIndex].j = MYcol;
-
-	// 	noiseMap[MYpixIndex] = 0;
-
-	// }
 	
 }
 
-
-// __device__
-// uch Horz[5][5] = {	{ 0, 0,  0,  0,  0 },
-// 					{ 1, 1,  1,  1,  1 },
-// 					{ 1, 1,  0,  1,  1 },
-// 					{ 1, 1,  1,  1,  1 },
-// 					{ 0, 0,  0,  0,  0 } };
-
-// __device__
-// uch Vert[5][5] = {	{ 0, 1,  1,  1,  0 },
-// 					{ 0, 1,  1,  1,  0 },
-// 					{ 0, 1,  0,  1,  0 },
-// 					{ 0, 1,  1,  1,  0 },
-// 					{ 0, 1,  1,  1,  0 } };
-
-// __device__
-// uch mask45[7][7]={	{0, 0, 0, 0, 1, 0, 0},
-// 					{0, 0, 0, 1, 1, 1, 0},
-// 					{0, 0, 1, 1, 1, 1, 1},
-// 					{0, 1, 1, 0, 1, 1, 0},
-// 					{1, 1, 1, 1, 1, 0, 0},
-// 					{0, 1, 1, 1, 0, 0, 0},
-// 					{0, 0, 1, 0, 0, 0, 0}};
-
-// __device__
-// uch mask135[7][7]={	{0, 0, 1, 0, 0, 0, 0},
-//                   	{0, 1, 1, 1, 0, 0, 0},
-//                   	{1, 1, 1, 1, 1, 0, 0},
-//                   	{0, 1, 1, 0, 1, 1, 0},
-//                   	{0, 0, 1, 1, 1, 1, 1},
-//                   	{0, 0, 0, 1, 1, 1, 0},
-//                   	{0, 0, 0, 0, 1, 0, 0}};
 
 
 //3x3 standard mask
@@ -228,7 +189,7 @@ double mask4[7][7] = {  {0,			0,		0.0251,	0,		0,		0,		0		},
 						{0,			0,		0,		0,		0.0251,	0,		0		}};
 
 
-// Kernel that determines appropriate inpainting mask to use based on surrounding noiseless pixels
+// Kernel that determines appropriate inpainting mask to use for each noisy pixel based on surrounding noiseless pixels
 __global__
 void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *kernelIndices, ui ListLength, ui Hpixels, ui R) {
 
@@ -252,7 +213,7 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 	uch currListLength;
 
 	// control and tracking variables
-	int i, j, row, col, indx, maskAIndx=0, maskBIndx=0, maskCIndx=0, maskDIndx=0, chosenMask;
+	int i, j, row, col, indx, maskAIndx=0, maskBIndx=0, maskCIndx=0, maskDIndx=0, chosenMask=0;
 	float minStdDev=1000000.0, currStdDev, sum = 0.0, mean, standardDeviation = 0.0;
 
 	// obtain current noisy pixel indices
@@ -273,16 +234,16 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 			// if the current pixel is noise-free AND
 			if(noiseMap[indx]){
 
-				// if the current 5x5 horizontal mask cell is set to TRUE
-				if(mask1[i+2][j+2]) {
+				// if the current 5x5 horizontal mask cell is not 0
+				if((int)mask1[i+2][j+2]) {
 
 					// obtain noise free pixel and add to list
 					maskA[maskAIndx] = ImgSrc[indx];
 					maskAIndx++;
 				}
 
-				// if the current 5x5 vertical mask cell is set to TRUE
-				if(mask2[i+2][j+2]) {
+				// if the current 5x5 vertical mask cell is not 0
+				if((int)mask2[i+2][j+2]) {
 
 					// obtain noise free pixel and add to list
 					maskB[maskBIndx] = ImgSrc[indx];
@@ -305,15 +266,15 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 			// if the current pixel is noise-free AND
 			if(noiseMap[indx]){
 
-				// if the current 7x7 45 degree mask cell is set to TRUE
-				if(mask3[i+3][j+3]) {
+				// if the current 7x7 45 degree mask cell is not 0
+				if((int)mask3[i+3][j+3]) {
 					// obtain noise free pixel and add to list
 					maskC[maskCIndx] = ImgSrc[indx];
 					maskCIndx++;
 				}
 
-				// if the current 7x7 135 degree mask cell is set to TRUE
-				if(mask4[i+3][j+3]) {
+				// if the current 7x7 135 degree mask cell is not 0
+				if((int)mask4[i+3][j+3]) {
 					// obtain noise free pixel and add to list
 					maskD[maskDIndx] = ImgSrc[indx];
 					maskDIndx++;
@@ -354,7 +315,7 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 			for(j = 0; j < currListLength; j++)
 				standardDeviation += pow((float)currMask[j] - mean, 2);
 
-			// final StdDev is normalized by list length
+			// final StdDev^2 is normalized by list length
 			currStdDev = standardDeviation / currListLength;
 
 			if(currStdDev < minStdDev) {
@@ -374,7 +335,7 @@ void determineMasks(pixelCoords *locations, uch *ImgSrc, uch *noiseMap, uch *ker
 
 
 
-// convolutions based on kernel indices
+// inpainting convolutions based on kernel indices
 __global__
 void Convolute(double *ImgCurr, double *ImgBW,  pixelCoords *pc,  uch *kernalI, ui numNoisy, ui Hpixels)
 {
@@ -394,6 +355,7 @@ void Convolute(double *ImgCurr, double *ImgBW,  pixelCoords *pc,  uch *kernalI, 
 	int a,b,row,col,index;
 	double C = 0.0;
 
+	// based on the kernel index, convolutes with the correct mask
 	switch(m)
 	{
 		case 0: for (a = -1; a <= 1; a++){
@@ -463,7 +425,7 @@ void SAD(ui *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, u
 	ui MYtid = threadIdx.x;
 	ui MYgtid = ThrPerBlk * MYbid + MYtid;
 	
-	if (MYgtid >= numNoisy) return;			// index out of range
+	if (MYgtid >= numNoisy) return;	// index out of range
 
 	ui i=pc[MYgtid].i, j=pc[MYgtid].j; // current noisy pixel coordinates
 
@@ -474,7 +436,7 @@ void SAD(ui *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, u
 
 	// absolute difference
 	if(absDiff<0)
-		absDiff = absDiff*(-1);
+		absDiff = -absDiff;
 	
 	atomicAdd(sad, (ui)absDiff); // update global sum
 
@@ -483,6 +445,7 @@ void SAD(ui *sad, double *prev, double *current, pixelCoords *pc, ui numNoisy, u
 
 // Kernel that calculates a B&W image from an RGB image
 // resulting image has a double type for each pixel position
+// and a uch type for noisy pixel tracking
 __global__
 void BWKernel(uch *ImgBW, uch *ImgGPU, double *ImgfpBW, ui Hpixels)
 {
@@ -531,13 +494,14 @@ void RGBKernel(uch *ImgRGB, double *ImgBW, ui Hpixels)
 
 	uch pixInt = ImgBW[MYpixIndex];
 
+	// trivial copying: copy R=G=B = B&W pixel intensity
 	ImgRGB[MYdstIndex] = pixInt;
 	ImgRGB[MYdstIndex+1] = pixInt;
 	ImgRGB[MYdstIndex+2] = pixInt;
 }
 
 
-// Kernel that copies an image from one part of the
+// Kernel that copies just the noisy pixels from one part of the
 // GPU memory (ImgSrc) to another (ImgDst)
 __global__
 void NoisyPixCopy(double *NPDst, double *ImgSrc, pixelCoords *pc, ui NoisyPixelListLength, ui Hpixels)
@@ -570,19 +534,6 @@ void PixCopy(double *ImgDst, double *ImgSrc, ui FS)
 	if (MYgtid > FS) return;				// outside the allocated memory
 	ImgDst[MYgtid] = ImgSrc[MYgtid];
 }
-
-
-/*
-// helper function that wraps CUDA API calls, reports any error and exits
-void chkCUDAErr(cudaError_t error_id)
-{
-	if (error_id != CUDA_SUCCESS)
-	{
-		printf("CUDA ERROR :::%\n", cudaGetErrorString(error_id));
-		exit(EXIT_FAILURE);
-	}
-}
-*/
 
 
 // Read a 24-bit/pixel BMP file into a 1D linear array.
@@ -700,13 +651,12 @@ int main(int argc, char **argv)
 
 	cudaEventCreate(&time1);
 	cudaEventCreate(&time2);
-	// cudaEventCreate(&time3);
-	// cudaEventCreate(&time4);
 
 	
 
 /*
 	>>> GPU STORAGE DETAILS >>>
+	***********************
 	GPUImage: IMAGESIZE
 	GPUCopyImage(BW) : IMAGEPIX
 	NoisyPixelCoords: IMAGEPIX*sizeof(pixelCoords)
@@ -718,7 +668,7 @@ int main(int argc, char **argv)
 	GPU_PREV_BW : sizeof(double) * IMAGEPIX
 	GPU_CURR_BW : sizeof(double) * IMAGEPIX  
 	GPU_SAD : sizeof(ui)
-	 ***********************
+	***********************
 
 */
 	// allocate sufficient memory on the GPU to hold all above items
@@ -766,11 +716,11 @@ int main(int argc, char **argv)
 
 	cudaEventRecord(time1, 0);		// Time stamp at the start of the GPU transfer
 
-	
+	// calculate GPU-specific parameters
 	BlkPerRow = CEIL(ip.Hpixels, ThrPerBlk);
 	NumBlocks = IPV*BlkPerRow;
 	
-
+	// transform RGB input image into grayscale
 	BWKernel <<< NumBlocks, ThrPerBlk >>> (GPUCopyImg, GPUImg, GPU_CURR_BW, IPH);
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
@@ -778,19 +728,16 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-
+	// call kernel to locate the noisy pixels in the image
 	findNoisyPixels <<< NumBlocks, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, GlobalMax, GlobalMin, NumNoisyPixelsGPU, IPH, IPV);
-	
-	// cudaDeviceSynchronize waits for the kernel to finish, and returns
-	// any errors encountered during the launch.
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "\n\ncudaDeviceSynchronize for findNoisyPixels returned error code %d after launching the kernel!\n", cudaStatus);
 		exit(EXIT_FAILURE);
 	}
 
-	//cudaEventRecord(time3, 0);
 
+	// copy the length of the list holding the noisy pixel locations from the GPU to CPU
 	cudaStatus = cudaMemcpy(&NumNoisyPixelsCPU, NumNoisyPixelsGPU, sizeof(ui), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy of NumNoisyPixels, GPU to CPU  failed!");
@@ -798,17 +745,18 @@ int main(int argc, char **argv)
 	}
 
 
-	// only schedule as many threads are needed for NoisyPixelListLength
+	// only schedule as many threads are needed for NumNoisyPixelsCPU
 	NumBlocksNP = CEIL(NumNoisyPixelsCPU, ThrPerBlk);
 	
+	// determineMasks tries to find the optimal inpainting masks to use for each noisy pixel
 	determineMasks <<< NumBlocksNP, ThrPerBlk >>> (NoisyPixelCoords, GPUCopyImg, NoiseMap, KernelIndices, NumNoisyPixelsCPU, IPH, R);
-
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "\n\ncudaDeviceSynchronize for determineMasks returned error code %d after launching the kernel!\n", cudaStatus);
 		exit(EXIT_FAILURE);
 	}
 
+	// intially copy the current working version of the image to gain a previous version
 	PixCopy <<< NumBlocks, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, IMAGEPIX);
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
@@ -827,49 +775,48 @@ int main(int argc, char **argv)
 			exit(EXIT_FAILURE);
 		}
 		
+		// perform convolutions with appropriate inpainting masks
 		Convolute <<< NumBlocksNP, ThrPerBlk >>> (GPU_CURR_BW, GPU_PREV_BW,  NoisyPixelCoords,  KernelIndices, NumNoisyPixelsCPU, IPH);
-
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "\n\n cudaDeviceSynchronize for Convolute returned error code %d after launching the kernel!\n", cudaStatus);
 			exit(EXIT_FAILURE);
 		}
 
+		// find sum of absolute differences for just the pixels denoted as noisy
 		SAD <<< NumBlocksNP, ThrPerBlk >>> (GPU_SAD, GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH, IPV);
-
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "\n\n cudaDeviceSynchronize for SAD returned error code %d after launching the kernel!\n", cudaStatus);
 			exit(EXIT_FAILURE);
 		}
 
+		// copy just the noisy pixel intensities from the current working image version to the previous version
 		NoisyPixCopy <<< NumBlocksNP, ThrPerBlk >>> (GPU_PREV_BW, GPU_CURR_BW, NoisyPixelCoords, NumNoisyPixelsCPU, IPH);
-
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "\n\n cudaDeviceSynchronize for NoisyPixCopy returned error code %d after launching the kernel!\n", cudaStatus);
 			exit(EXIT_FAILURE);
 		}
 
-		// CudaMemcpy the SAD from GPU to CPU here
+		// CudaMemcpy the SAD from GPU to CPU (it is a GPU variable)
 		cudaStatus = cudaMemcpy(&CPU_SAD, GPU_SAD, sizeof(ui), cudaMemcpyDeviceToHost);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy of SAD from GPU to CPU  failed!");
 			exit(EXIT_FAILURE);
 		}
 
-		//printf("The SAD is %d\n", CPU_SAD);
 
-	} while(CPU_SAD > T);
+	} while(CPU_SAD > T); // iterate until the sum of absolute differences is below threshold
 
 
-	// must convert floating point B&W back to unsigned char formats
+	// must convert floating point B&W back to unsigned char format
+	NumBlocks = IPV*BlkPerRow;
 	RGBKernel <<< NumBlocks, ThrPerBlk >>> (GPUImg, GPU_CURR_BW, IPH);
 	GPUResult = GPUImg;
 
 	cudaEventRecord(time2, 0);		// Time stamp after the CPU --> GPU tfr is done
 
-	//GPUDataTransfer = GPUtotalBufferSize;
 
 	//Copy output (results) from GPU buffer to host (CPU) memory.
 	cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
@@ -878,49 +825,37 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	//cudaEventRecord(time4, 0);
-
 	cudaEventSynchronize(time1);
 	cudaEventSynchronize(time2);
-	//cudaEventSynchronize(time3);
-	//cudaEventSynchronize(time4);
 
-	//cudaEventElapsedTime(&totalTime, time1, time4);
-	//cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
 	cudaEventElapsedTime(&kernelExecutionTime, time1, time2);
-	//cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
+
 
 	cudaStatus = cudaDeviceSynchronize();
-	//checkError(cudaGetLastError());	// screen for errors in kernel launches
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "\n Program failed after cudaDeviceSynchronize()!");
 		free(TheImg);
 		free(CopyImg);
 		exit(EXIT_FAILURE);
 	}
-	WriteBMPlin(CopyImg, OutputFileName);		// Write the flipped image back to disk
+
+	WriteBMPlin(CopyImg, OutputFileName);		// Write the denoised image back to disk
+
 	printf("\n\n--------------------------------------------------------------------------\n");
 	printf("%s    ComputeCapab=%d.%d  [max %s blocks; %d thr/blk] \n", 
 			GPUprop.name, GPUprop.major, GPUprop.minor, SupportedBlocks, MaxThrPerBlk);
 	printf("--------------------------------------------------------------------------\n");
 	printf("%s %s %s %d %d %u   [%u BLOCKS, %u BLOCKS/ROW]\n", ProgName, InputFileName, OutputFileName,
 			T, R, ThrPerBlk, NumBlocks, BlkPerRow);
-	// printf("--------------------------------------------------------------------------\n");
-	// printf("CPU->GPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrCPUtoGPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrCPUtoGPU));
-	printf("Kernel Execution    =%7.2f ms\n", kernelExecutionTime);//, DATAMB(GPUDataTransfer), DATABW(GPUDataTransfer, kernelExecutionTime));  ...  %4d MB  ...  %6.2f GB/s
-	// printf("GPU->CPU Transfer   =%7.2f ms  ...  %4d MB  ...  %6.2f GB/s\n", tfrGPUtoCPU, DATAMB(IMAGESIZE), DATABW(IMAGESIZE, tfrGPUtoCPU));
-	// printf("--------------------------------------------------------------------------\n");
-	// printf("Total time elapsed  =%7.2f ms       %4d MB  ...  %6.2f GB/s\n", totalTime, DATAMB((2 * IMAGESIZE + GPUDataTransfer)), DATABW((2 * IMAGESIZE + GPUDataTransfer), totalTime));
+	
+	printf("Kernel Execution    =%7.2f ms\n", kernelExecutionTime);
 	printf("--------------------------------------------------------------------------\n\n");
 
-	// Deallocate CPU, GPU memory and destroy events.
+	// Deallocate CPU, GPU memory and destroy events
 	cudaFree(GPUptr);
 	cudaEventDestroy(time1);
 	cudaEventDestroy(time2);
-	// cudaEventDestroy(time3);
-	// cudaEventDestroy(time4);
-	// cudaDeviceReset must be called before exiting in order for profiling and
-	// tracing tools such as Parallel Nsight and Visual Profiler to show complete traces.
+
 	cudaStatus = cudaDeviceReset();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaDeviceReset failed!");
